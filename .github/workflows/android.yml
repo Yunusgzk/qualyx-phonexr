@@ -51,7 +51,7 @@ jobs:
             "cmake;3.22.1" \
             "ndk;27.2.12479018"
 
-      - name: Patch OpenXR runtime
+            - name: Patch OpenXR runtime
         working-directory: phonexr-src
         run: |
           python3 - <<'PY'
@@ -65,34 +65,100 @@ jobs:
 
           s = p.read_text(encoding="utf-8")
 
-          start = s.find("PFN_xrCreateInstance")
+          # Remove PFN declarations.
+          s = re.sub(
+              r'^[ \t]*PFN_xr[A-Za-z0-9_]+[ \t]+xr[A-Za-z0-9_]+[ \t]*=[ \t]*nullptr[ \t]*;[ \t]*\n?',
+              '',
+              s,
+              flags=re.MULTILINE
+          )
 
-          if start != -1:
-              end_marker = "MAP(xrGetCurrentInteractionProfile)"
-              end = s.find(end_marker, start)
+          # Remove every standalone MAP(xrFunction) line.
+          s = re.sub(
+              r'^[ \t]*MAP\(xr[A-Za-z0-9_]+\)[ \t]*;?[ \t]*\n?',
+              '',
+              s,
+              flags=re.MULTILINE
+          )
 
-              if end != -1:
-                  end = s.find("}", end)
+          # Remove the old MAP macro definition if present.
+          s = re.sub(
+              r'(?ms)^[ \t]*#define[ \t]+MAP\(.*?\n(?:.*?\n)*?[ \t]*#undef[ \t]+MAP.*?\n?',
+              '',
+              s
+          )
 
-                  if end != -1:
-                      s = s[:start] + s[end + 1:]
-                      print("OpenXR dispatch bloğu kaldırıldı.")
-                  else:
-                      print("Dispatch bloğunun kapanışı bulunamadı.")
-              else:
-                  print("MAP bloğunun sonu bulunamadı.")
-          else:
-              print("PFN_xrCreateInstance bulunamadı.")
+          # Remove the invalid XrView fields.
+          s = re.sub(
+              r'v\[k\]\.type\s*=\s*7\s*;\s*',
+              '',
+              s
+          )
 
           s = re.sub(
-              r'v\[k\]\.type\s*=\s*7\s*;\s*v\[k\]\.next\s*=\s*nullptr\s*;?',
+              r'v\[k\]\.next\s*=\s*nullptr\s*;\s*',
               '',
               s
           )
 
           p.write_text(s, encoding="utf-8")
 
-          print("OpenXR patch tamamlandı.")
+          print("OpenXR PFN/MAP temizliği tamamlandı.")
+          print("XrView type/next temizliği tamamlandı.")
+          PY      - name: Patch OpenXR runtime
+        working-directory: phonexr-src
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("app/src/main/cpp/phonexr_runtime.cpp")
+
+          if not p.exists():
+              raise SystemExit(f"Dosya bulunamadı: {p}")
+
+          s = p.read_text(encoding="utf-8")
+
+          # Remove PFN declarations.
+          s = re.sub(
+              r'^[ \t]*PFN_xr[A-Za-z0-9_]+[ \t]+xr[A-Za-z0-9_]+[ \t]*=[ \t]*nullptr[ \t]*;[ \t]*\n?',
+              '',
+              s,
+              flags=re.MULTILINE
+          )
+
+          # Remove every standalone MAP(xrFunction) line.
+          s = re.sub(
+              r'^[ \t]*MAP\(xr[A-Za-z0-9_]+\)[ \t]*;?[ \t]*\n?',
+              '',
+              s,
+              flags=re.MULTILINE
+          )
+
+          # Remove the old MAP macro definition if present.
+          s = re.sub(
+              r'(?ms)^[ \t]*#define[ \t]+MAP\(.*?\n(?:.*?\n)*?[ \t]*#undef[ \t]+MAP.*?\n?',
+              '',
+              s
+          )
+
+          # Remove the invalid XrView fields.
+          s = re.sub(
+              r'v\[k\]\.type\s*=\s*7\s*;\s*',
+              '',
+              s
+          )
+
+          s = re.sub(
+              r'v\[k\]\.next\s*=\s*nullptr\s*;\s*',
+              '',
+              s
+          )
+
+          p.write_text(s, encoding="utf-8")
+
+          print("OpenXR PFN/MAP temizliği tamamlandı.")
+          print("XrView type/next temizliği tamamlandı.")
           PY
 
       - name: Patch Vulkan headers
