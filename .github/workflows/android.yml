@@ -51,7 +51,46 @@ jobs:
             "cmake;3.22.1" \
             "ndk;27.2.12479018"
 
-      - name: Configure native Android build
+      - name: Patch OpenXR runtime compatibility
+        working-directory: phonexr-src
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("app/src/main/cpp/phonexr_runtime.cpp")
+
+          if not p.exists():
+              raise SystemExit(f"Dosya bulunamadı: {p}")
+
+          s = p.read_text(encoding="utf-8")
+
+          lines = s.splitlines(keepends=True)
+          kept = []
+
+          for line in lines:
+              if re.search(r'\bPFN_xr[A-Za-z0-9_]+\b', line):
+                  continue
+
+              if re.search(r'^\s*MAP\(xr[A-Za-z0-9_]+\)\s*;?\s*$', line):
+                  continue
+
+              kept.append(line)
+
+          s = "".join(kept)
+
+          s = re.sub(
+              r'v\[k\]\.type\s*=\s*7\s*;\s*v\[k\]\.next\s*=\s*nullptr\s*;?',
+              '',
+              s
+          )
+
+          p.write_text(s, encoding="utf-8")
+
+          print("OpenXR runtime compatibility patch uygulandı.")
+          PY
+
+      - name: Patch Vulkan headers
         working-directory: phonexr-src
         run: |
           python3 - <<'PY'
@@ -90,11 +129,20 @@ jobs:
       - name: Check extracted project
         working-directory: phonexr-src
         run: |
+          echo "=== Project files ==="
           find . -maxdepth 3 -type f | sort
+
           echo
+          echo "=== Gradle files ==="
           find . -name "build.gradle*" -o -name "settings.gradle*"
+
           echo
+          echo "=== CMake files ==="
           find . -name "CMakeLists.txt"
+
+          echo
+          echo "=== Native source files ==="
+          find app/src/main/cpp -maxdepth 1 -type f | sort
 
       - name: Build APK
         working-directory: phonexr-src
