@@ -1,0 +1,144 @@
+name: PhoneXR Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract PhoneXR source
+        run: |
+          rm -rf phonexr-src
+          mkdir -p phonexr-src
+          unzip -o qualyx-phonexr-v10-build.zip -d phonexr-src
+          echo "Extracted:"
+          find phonexr-src -maxdepth 3 -type f | head -100
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK
+        run: |
+          export ANDROID_HOME="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -1)"
+          fi
+
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "cmake;3.22.1" \
+            "ndk;27.2.12479018"
+
+      - name: Patch OpenXR compatibility declarations
+        working-directory: phonexr-src
+        run: |
+          cat > app/src/main/cpp/openxr/phonexr_compat_api.h <<'EOF'
+          #pragma once
+          #include "phonexr_openxr_min.h"
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+
+          typedef struct XrInteractionProfileStateCompat {
+              int type;
+              void* next;
+              XrPath interactionProfile;
+          } XrInteractionProfileStateCompat;
+
+          XrResult xrStringToPath(XrInstance,const char*,XrPath*);
+          XrResult xrPathToString(XrInstance,XrPath,uint32_t,uint32_t*,char*);
+          XrResult xrCreateActionSet(XrInstance,const XrActionSetCreateInfo*,XrActionSet*);
+          XrResult xrDestroyActionSet(XrActionSet);
+          XrResult xrCreateAction(XrActionSet,const XrActionCreateInfo*,XrAction*);
+          XrResult xrDestroyAction(XrAction);
+          XrResult xrAttachSessionActionSets(XrSession,const XrSessionActionSetsAttachInfo*);
+          XrResult xrCreateActionSpace(XrSession,const XrActionSpaceCreateInfo*,XrSpace*);
+          XrResult xrSuggestInteractionProfileBindings(XrInstance,const XrInteractionProfileSuggestedBinding*);
+          XrResult xrSyncActions(XrSession,const XrActionsSyncInfo*);
+          XrResult xrGetActionStateBoolean(XrSession,const XrActionStateGetInfo*,XrActionStateBoolean*);
+          XrResult xrGetActionStateFloat(XrSession,const XrActionStateGetInfo*,XrActionStateFloat*);
+          XrResult xrGetActionStateVector2f(XrSession,const XrActionStateGetInfo*,XrActionStateVector2f*);
+          XrResult xrGetActionStatePose(XrSession,const XrActionStateGetInfo*,XrActionStatePose*);
+          XrResult xrStopHapticFeedback(XrSession,const XrHapticActionInfo*);
+          XrResult xrApplyHapticFeedback(XrSession,const XrHapticActionInfo*,const void*);
+          XrResult xrGetCurrentInteractionProfile(XrSession,XrPath,XrInteractionProfileStateCompat*);
+          XrResult xrSetAndroidApplicationThreadKHR(XrSession,uint32_t,uint32_t);
+          XrResult xrPerfSettingsSetPerformanceLevelEXT(XrSession,uint32_t,uint32_t);
+          XrResult xrEnumerateDisplayRefreshRatesFB(XrSession,uint32_t,uint32_t*,float*);
+          XrResult xrGetDisplayRefreshRateFB(XrSession,float*);
+          XrResult xrRequestDisplayRefreshRateFB(XrSession,float);
+          XrResult xrInitializeLoaderKHR(const void*);
+
+          #ifdef __cplusplus
+          }
+          #endif
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          runtime = Path("app/src/main/cpp/phonexr_runtime.cpp")
+          s = runtime.read_text()
+          inc = '#include "openxr/phonexr_compat_api.h"\n'
+          if inc not in s:
+              s = s.replace(
+                  '#include "openxr/phonexr_openxr_min.h"\n',
+                  '#include "openxr/phonexr_openxr_min.h"\n' + inc,
+                  1
+              )
+          runtime.write_text(s)
+
+          compat = Path("app/src/main/cpp/phonexr_compat.cpp")
+          s = compat.read_text()
+          inc = '#include "openxr/phonexr_compat_api.h"\n'
+          if inc not in s:
+              s = s.replace(
+                  '#include "openxr/phonexr_openxr_min.h"\n',
+                  '#include "openxr/phonexr_openxr_min.h"\n' + inc,
+                  1
+              )
+          s = s.replace(
+              'struct XrInteractionProfileStateCompat { int type; void* next; XrPath interactionProfile; };\n',
+              ''
+          )
+          compat.write_text(s)
+          PY
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build APK
+        working-directory: phonexr-src
+        run: |
+          gradle --no-daemon :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualyx-phonexr-debug-arm64
+          path: phonexr-src/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
