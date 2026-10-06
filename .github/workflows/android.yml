@@ -1,4 +1,57 @@
-      - name: Patch OpenXR runtime compatibility
+name: PhoneXR Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract PhoneXR source
+        run: |
+          rm -rf phonexr-src
+          mkdir -p phonexr-src
+          unzip -o qualyx-phonexr-v10-build.zip -d phonexr-src
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK
+        run: |
+          export ANDROID_HOME="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -1)"
+          fi
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "cmake;3.22.1" \
+            "ndk;27.2.12479018"
+
+      - name: Patch OpenXR runtime
         working-directory: phonexr-src
         run: |
           python3 - <<'PY'
@@ -12,49 +65,94 @@
 
           s = p.read_text(encoding="utf-8")
 
-          # Remove the complete OpenXR loader-dispatch block.
-          # The bundled runtime implements these functions itself.
-          pattern = re.compile(
-              r'(?ms)^[ \t]*PFN_xrCreateInstance\b.*?'
-              r'^[ \t]*MAP\(xrGetCurrentInteractionProfile\).*?\n'
-              r'^[ \t]*\}'
-          )
+          start = s.find("PFN_xrCreateInstance")
 
-          s2, count = pattern.subn("", s)
+          if start != -1:
+              end_marker = "MAP(xrGetCurrentInteractionProfile)"
+              end = s.find(end_marker, start)
 
-          if count == 0:
-              print("PFN/MAP bloğu bulunamadı; alternatif temizleme uygulanıyor.")
+              if end != -1:
+                  end = s.find("}", end)
 
-              lines = s.splitlines(keepends=True)
+                  if end != -1:
+                      s = s[:start] + s[end + 1:]
+                      print("OpenXR dispatch bloğu kaldırıldı.")
+                  else:
+                      print("Dispatch bloğunun kapanışı bulunamadı.")
+              else:
+                  print("MAP bloğunun sonu bulunamadı.")
+          else:
+              print("PFN_xrCreateInstance bulunamadı.")
 
-              start = None
-              end = None
-
-              for i, line in enumerate(lines):
-                  if "PFN_xrCreateInstance" in line:
-                      start = i
-                  if start is not None and "MAP(xrGetCurrentInteractionProfile)" in line:
-                      end = i
-                      break
-
-              if start is not None and end is not None:
-                  # Include the following closing brace.
-                  if end + 1 < len(lines) and lines[end + 1].strip() == "}":
-                      end += 1
-
-                  del lines[start:end + 1]
-                  s2 = "".join(lines)
-                  count = 1
-
-          # XrView in this bundled source has no type/next members.
-          s2 = re.sub(
+          s = re.sub(
               r'v\[k\]\.type\s*=\s*7\s*;\s*v\[k\]\.next\s*=\s*nullptr\s*;?',
               '',
-              s2
+              s
           )
 
-          p.write_text(s2, encoding="utf-8")
+          p.write_text(s, encoding="utf-8")
 
-          print(f"OpenXR dispatch bloğu kaldırıldı: {count}")
-          print("XrView type/next erişimi düzeltildi.")
+          print("OpenXR patch tamamlandı.")
           PY
+
+      - name: Patch Vulkan headers
+        working-directory: phonexr-src
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          files = [
+              Path("app/src/main/cpp/phonexr_compat.cpp"),
+              Path("app/src/main/cpp/phonexr_compositor.cpp"),
+          ]
+
+          header = """#ifndef VK_USE_PLATFORM_ANDROID_KHR
+          #define VK_USE_PLATFORM_ANDROID_KHR
+          #endif
+          #include <vulkan/vulkan.h>
+          #include <vulkan/vulkan_android.h>
+
+          """
+
+          for p in files:
+              if not p.exists():
+                  raise SystemExit(f"Dosya bulunamadı: {p}")
+
+              s = p.read_text(encoding="utf-8")
+
+              if "#include <vulkan/vulkan.h>" not in s:
+                  p.write_text(header + s, encoding="utf-8")
+
+              print(f"Vulkan header kontrol edildi: {p}")
+          PY
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Check project
+        working-directory: phonexr-src
+        run: |
+          echo "=== Gradle ==="
+          find . -name "build.gradle*" -o -name "settings.gradle*"
+
+          echo
+          echo "=== CMake ==="
+          find . -name "CMakeLists.txt"
+
+          echo
+          echo "=== Native files ==="
+          find app/src/main/cpp -maxdepth 1 -type f | sort
+
+      - name: Build APK
+        working-directory: phonexr-src
+        run: |
+          gradle --no-daemon :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualyx-phonexr-debug-arm64
+          path: phonexr-src/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
