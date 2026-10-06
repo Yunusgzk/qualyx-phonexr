@@ -51,7 +51,7 @@ jobs:
             "cmake;3.22.1" \
             "ndk;27.2.12479018"
 
-            - name: Patch OpenXR runtime
+      - name: Patch OpenXR runtime compatibility
         working-directory: phonexr-src
         run: |
           python3 - <<'PY'
@@ -65,100 +65,29 @@ jobs:
 
           s = p.read_text(encoding="utf-8")
 
-          # Remove PFN declarations.
-          s = re.sub(
-              r'^[ \t]*PFN_xr[A-Za-z0-9_]+[ \t]+xr[A-Za-z0-9_]+[ \t]*=[ \t]*nullptr[ \t]*;[ \t]*\n?',
-              '',
-              s,
-              flags=re.MULTILINE
-          )
+          lines = s.splitlines(keepends=True)
+          kept = []
 
-          # Remove every standalone MAP(xrFunction) line.
-          s = re.sub(
-              r'^[ \t]*MAP\(xr[A-Za-z0-9_]+\)[ \t]*;?[ \t]*\n?',
-              '',
-              s,
-              flags=re.MULTILINE
-          )
+          for line in lines:
+              if re.search(r'\bPFN_xr[A-Za-z0-9_]+\b', line):
+                  continue
 
-          # Remove the old MAP macro definition if present.
-          s = re.sub(
-              r'(?ms)^[ \t]*#define[ \t]+MAP\(.*?\n(?:.*?\n)*?[ \t]*#undef[ \t]+MAP.*?\n?',
-              '',
-              s
-          )
+              if re.search(r'^\s*MAP\(xr[A-Za-z0-9_]+\)\s*;?\s*$', line):
+                  continue
 
-          # Remove the invalid XrView fields.
-          s = re.sub(
-              r'v\[k\]\.type\s*=\s*7\s*;\s*',
-              '',
-              s
-          )
+              kept.append(line)
+
+          s = "".join(kept)
 
           s = re.sub(
-              r'v\[k\]\.next\s*=\s*nullptr\s*;\s*',
+              r'v\[k\]\.type\s*=\s*7\s*;\s*v\[k\]\.next\s*=\s*nullptr\s*;?',
               '',
               s
           )
 
           p.write_text(s, encoding="utf-8")
 
-          print("OpenXR PFN/MAP temizliği tamamlandı.")
-          print("XrView type/next temizliği tamamlandı.")
-          PY      - name: Patch OpenXR runtime
-        working-directory: phonexr-src
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path("app/src/main/cpp/phonexr_runtime.cpp")
-
-          if not p.exists():
-              raise SystemExit(f"Dosya bulunamadı: {p}")
-
-          s = p.read_text(encoding="utf-8")
-
-          # Remove PFN declarations.
-          s = re.sub(
-              r'^[ \t]*PFN_xr[A-Za-z0-9_]+[ \t]+xr[A-Za-z0-9_]+[ \t]*=[ \t]*nullptr[ \t]*;[ \t]*\n?',
-              '',
-              s,
-              flags=re.MULTILINE
-          )
-
-          # Remove every standalone MAP(xrFunction) line.
-          s = re.sub(
-              r'^[ \t]*MAP\(xr[A-Za-z0-9_]+\)[ \t]*;?[ \t]*\n?',
-              '',
-              s,
-              flags=re.MULTILINE
-          )
-
-          # Remove the old MAP macro definition if present.
-          s = re.sub(
-              r'(?ms)^[ \t]*#define[ \t]+MAP\(.*?\n(?:.*?\n)*?[ \t]*#undef[ \t]+MAP.*?\n?',
-              '',
-              s
-          )
-
-          # Remove the invalid XrView fields.
-          s = re.sub(
-              r'v\[k\]\.type\s*=\s*7\s*;\s*',
-              '',
-              s
-          )
-
-          s = re.sub(
-              r'v\[k\]\.next\s*=\s*nullptr\s*;\s*',
-              '',
-              s
-          )
-
-          p.write_text(s, encoding="utf-8")
-
-          print("OpenXR PFN/MAP temizliği tamamlandı.")
-          print("XrView type/next temizliği tamamlandı.")
+          print("OpenXR runtime compatibility patch uygulandı.")
           PY
 
       - name: Patch Vulkan headers
@@ -197,18 +126,22 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Check project
+      - name: Check extracted project
         working-directory: phonexr-src
         run: |
-          echo "=== Gradle ==="
+          echo "=== Project files ==="
+          find . -maxdepth 3 -type f | sort
+
+          echo
+          echo "=== Gradle files ==="
           find . -name "build.gradle*" -o -name "settings.gradle*"
 
           echo
-          echo "=== CMake ==="
+          echo "=== CMake files ==="
           find . -name "CMakeLists.txt"
 
           echo
-          echo "=== Native files ==="
+          echo "=== Native source files ==="
           find app/src/main/cpp -maxdepth 1 -type f | sort
 
       - name: Build APK
