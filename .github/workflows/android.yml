@@ -21,56 +21,9 @@ jobs:
           rm -rf phonexr-src
           mkdir -p phonexr-src
           unzip -o qualyx-phonexr-v10-build.zip -d phonexr-src
+
           echo "Extracted:"
           find phonexr-src -maxdepth 3 -type f | head -100
-
-      - name: Fix OpenXR function pointers
-        working-directory: phonexr-src
-        run: |
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          files = list(Path(".").rglob("phonexr_runtime.cpp"))
-          if not files:
-              raise SystemExit("phonexr_runtime.cpp bulunamadı")
-
-          p = files[0]
-          s = p.read_text(encoding="utf-8")
-
-          funcs = []
-          for name in re.findall(r'\bMAP\((xr[A-Za-z0-9_]+)\)', s):
-              if name not in funcs:
-                  funcs.append(name)
-
-          missing = []
-          for name in funcs:
-              if not re.search(
-                  r'\bPFN_' + re.escape(name) + r'\s+' + re.escape(name) + r'\b',
-                  s
-              ):
-                  missing.append(name)
-
-          if missing:
-              decls = "\n".join(
-                  f"PFN_{name} {name} = nullptr;"
-                  for name in missing
-              )
-
-              first_map = re.search(r'(?m)^.*\bMAP\(', s)
-              if not first_map:
-                  raise SystemExit("MAP(...) çağrısı bulunamadı")
-
-              pos = first_map.start()
-              s = s[:pos] + decls + "\n\n" + s[pos:]
-              p.write_text(s, encoding="utf-8")
-
-          print("OpenXR MAP fonksiyonları:", len(funcs))
-          print(
-              "Eklenen pointer tanımları:",
-              ", ".join(missing) if missing else "yok"
-          )
-          PY
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -81,7 +34,9 @@ jobs:
       - name: Prepare Android SDK
         run: |
           export ANDROID_HOME="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
 
@@ -102,6 +57,23 @@ jobs:
             "cmake;3.22.1" \
             "ndk;27.2.12479018"
 
+      - name: Configure native Android build
+        working-directory: phonexr-src
+        run: |
+          echo "Configuring Vulkan Android support..."
+
+          CMAKE_FILE="app/CMakeLists.txt"
+
+          if [ ! -f "$CMAKE_FILE" ]; then
+            echo "CMakeLists.txt bulunamadı: $CMAKE_FILE"
+            exit 1
+          fi
+
+          sed -i '1i add_compile_definitions(VK_USE_PLATFORM_ANDROID_KHR)' "$CMAKE_FILE"
+
+          echo "CMakeLists.txt:"
+          head -20 "$CMAKE_FILE"
+
       - name: Install Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -112,9 +84,14 @@ jobs:
         run: |
           echo "Project:"
           find . -maxdepth 3 -type f | sort
+
           echo
           echo "Gradle files:"
           find . -name "build.gradle*" -o -name "settings.gradle*"
+
+          echo
+          echo "CMake files:"
+          find . -name "CMakeLists.txt"
 
       - name: Build APK
         working-directory: phonexr-src
